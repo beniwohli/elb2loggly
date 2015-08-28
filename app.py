@@ -14,7 +14,8 @@ from flask import Flask, json, request
 
 app = Flask(__name__)
 
-
+BIND_HOST = os.environ.get('BIND_HOST', '0.0.0.0')
+BIND_PORT = int(os.environ.get('BIND_PORT', 5000))
 ACCESS_KEY = os.environ['AWS_ACCESS_KEY_ID']
 SECRET_KEY = os.environ['AWS_SECRET_KEY']
 LOGGLY_TOKEN = os.environ['LOGGLY_TOKEN']
@@ -55,6 +56,7 @@ header = [
     'received_bytes',
     'sent_bytes',
     'request',
+    # additional fields not available in older ELBs (pre March 2015)
     'user_agent',
     'ssl_cipher',
     'ssl_protocol'
@@ -74,6 +76,7 @@ def download_and_process(s3_object_url):
     reader = csv.DictReader(response.text.splitlines(), fieldnames=header, restval=None, dialect=Dialect)
     output = []
     for row in reader:
+        # split up some compound fields
         row['client_ip'], row['client_port'] = row.pop('client').split(':')
         row['http_method'], row['request_uri'], row['http_version'] = row.pop('request').split(' ')
         output.append(json.dumps(row))
@@ -89,16 +92,19 @@ def worker():
     while True:
         with q.task() as task:
             url, not_before, tries = task
+
+            # check if this task should already run
             if not_before <= datetime.datetime.now():
                 tries += 1
                 try:
-                    download_and_process(task.url)
+                    download_and_process(url)
                     continue
                 except Exception:
+                    # back off exponentially
                     not_before = datetime.datetime.now() + datetime.timedelta(seconds=2**tries)
             if tries <= MAX_TRIES:
                 q.put(Task(url, not_before, tries))
-            time.sleep(10)
+            time.sleep(10)  # sleep a bit to not tax the CPU too much
 
 t = threading.Thread(target=worker)
 t.daemon = True
@@ -130,4 +136,4 @@ def sns():
     return '', 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host=BIND_HOST, port=BIND_PORT)
