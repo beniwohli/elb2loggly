@@ -100,6 +100,8 @@ def download_and_process(s3_object_url):
         headers={'content-type': 'application/json'},
         timeout=5,
     )
+    if response.status_code != requests.codes.ok:
+        raise Exception('Loggly responded %s' % response.text)
 
 
 def worker():
