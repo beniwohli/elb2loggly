@@ -73,6 +73,19 @@ header = [
     'ssl_protocol'
 ]
 
+processors = {
+    'elb_status_code': int,
+    'backend_status_code': int,
+    'received_bytes': int,
+    'sent_bytes': int,
+}
+
+log_format = (
+    '{client_ip} {elb} {user} [{timestamp_obj:%d/%b/%Y:%H:%M:%S +0000}] '
+    '"{http_method} {request_uri} {http_version}" '
+    '{elb_status_code} {sent_bytes} "{referrer}" "{user_agent_or_empty}" '
+)
+
 
 class Dialect(csv.Dialect):
     delimiter = ' '
@@ -84,6 +97,18 @@ class Dialect(csv.Dialect):
 
 # # # Task handling # # #
 
+def apache_combined_log(row):
+    timestamp_obj = datetime.datetime.strptime(row['timestamp'],
+                                               "%Y-%m-%dT%H:%M:%S.%fZ")
+    return log_format.format(
+        timestamp_obj=timestamp_obj,
+        user='-',
+        referrer='',
+        user_agent_or_empty=row['user_agent'] or '-',
+        **row
+    )
+
+
 def download_and_process(s3_object_url):
     response = s3ssion.get(s3_object_url, timeout=5)
     reader = csv.DictReader(response.text.splitlines(), fieldnames=header, restval=None, dialect=Dialect)
@@ -92,12 +117,19 @@ def download_and_process(s3_object_url):
         # split up some compound fields
         row['client_ip'], row['client_port'] = row.pop('client').split(':')
         row['http_method'], row['request_uri'], row['http_version'] = row.pop('request').split(' ')
-        output.append(json.dumps(row))
+
+        # convert some fields into native types
+        for field, func in processors.items():
+            try:
+                row[field] = func(row[field])
+            except Exception:
+                pass
+        output.append(apache_combined_log(row) + json.dumps(row))
     app.logger.info('Sending %d items to loggly', len(output))
     response = requests.post(
         loggly_url,
         data='\n'.join(output),
-        headers={'content-type': 'application/json'},
+        headers={'content-type': 'text/plain'},
         timeout=5,
     )
     if response.status_code != requests.codes.ok:
@@ -120,8 +152,10 @@ def worker():
                     # back off exponentially
                     not_before = datetime.datetime.now() + datetime.timedelta(seconds=2**tries)
                     app.logger.warning(
-                        'Got exception while processing %s: %s(%s). Retrying not before %s',
-                        url, type(e).__name__, str(e), not_before.strftime('%H:%M:%S')
+                        'Got exception while processing %s: %s(%s). '
+                        'Retrying not before %s',
+                        url, type(e).__name__, str(e),
+                        not_before.strftime('%H:%M:%S')
                     )
             if tries <= MAX_TRIES:
                 q.put(Task(url, not_before, tries))
