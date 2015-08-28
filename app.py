@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 import csv
 import datetime
+import logging
 import os
+import sys
 import threading
 import time
 from collections import namedtuple
@@ -12,7 +14,7 @@ import requests
 from awsauth import S3Auth
 from flask import Flask, json, request
 
-app = Flask(__name__)
+# # # Configuration # # #
 
 BIND_HOST = os.environ.get('BIND_HOST', '0.0.0.0')
 BIND_PORT = int(os.environ.get('BIND_PORT', 5000))
@@ -26,6 +28,15 @@ loggly_url = 'http://logs-01.loggly.com/bulk/{}/{}/bulk/'.format(
     LOGGLY_TOKEN,
     LOGGLY_TAG,
 )
+
+
+# # # Globals # # #
+
+app = Flask(__name__)
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter('%(levelname)s: %(asctime)s: %(message)s'))
+app.logger.addHandler(handler)
+app.logger.setLevel(logging.DEBUG)
 
 s3ssion = requests.Session()
 s3ssion.auth = S3Auth(ACCESS_KEY, SECRET_KEY)
@@ -71,6 +82,8 @@ class Dialect(csv.Dialect):
     quoting = csv.QUOTE_ALL
 
 
+# # # Task handling # # #
+
 def download_and_process(s3_object_url):
     response = s3ssion.get(s3_object_url, timeout=5)
     reader = csv.DictReader(response.text.splitlines(), fieldnames=header, restval=None, dialect=Dialect)
@@ -80,6 +93,7 @@ def download_and_process(s3_object_url):
         row['client_ip'], row['client_port'] = row.pop('client').split(':')
         row['http_method'], row['request_uri'], row['http_version'] = row.pop('request').split(' ')
         output.append(json.dumps(row))
+    app.logger.info('Sending %d items to loggly', len(output))
     response = requests.post(
         loggly_url,
         data='\n'.join(output),
@@ -97,13 +111,20 @@ def worker():
             if not_before <= datetime.datetime.now():
                 tries += 1
                 try:
+                    app.logger.info('Downloading and processing %s, tries: %d', url, tries)
                     download_and_process(url)
                     continue
-                except Exception:
+                except Exception as e:
                     # back off exponentially
                     not_before = datetime.datetime.now() + datetime.timedelta(seconds=2**tries)
+                    app.logger.warning(
+                        'Got exception while processing %s: %s(%s). Retrying not before %s',
+                        url, type(e).__name__, str(e), not_before.strftime('%H:%M:%S')
+                    )
             if tries <= MAX_TRIES:
                 q.put(Task(url, not_before, tries))
+            else:
+                app.logger.error('Gave up sending %s after %d tries', url, tries)
             time.sleep(10)  # sleep a bit to not tax the CPU too much
 
 t = threading.Thread(target=worker)
@@ -115,7 +136,8 @@ t.start()
 def sns():
     headers = request.headers
     msg_type = headers.get('x-amz-sns-message-type')
-    obj = request.get_json()
+    app.logger.info('Got SNS notification %s; content_type=%s', msg_type, request.content_type)
+    obj = json.loads(request.data)
 
     if msg_type == 'SubscriptionConfirmation':
         subscribe_url = obj[u'SubscribeURL']
