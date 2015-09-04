@@ -54,6 +54,8 @@ class MyQueue(Queue):
 
 q = MyQueue()
 
+worker_thread = None
+
 header = [
     'timestamp',
     'elb',
@@ -163,13 +165,10 @@ def worker():
                 app.logger.error('Gave up sending %s after %d tries', url, tries)
             time.sleep(10)  # sleep a bit to not tax the CPU too much
 
-t = threading.Thread(target=worker)
-t.daemon = True
-t.start()
-
 
 @app.route('/sns', methods=['GET', 'POST'])
 def sns():
+    global worker_thread
     headers = request.headers
     msg_type = headers.get('x-amz-sns-message-type')
     app.logger.info('Got SNS notification %s; content_type=%s', msg_type, request.content_type)
@@ -190,6 +189,10 @@ def sns():
                 record['s3']['object']['key']
             )
             q.put(Task(url, datetime.datetime.now(), 0))
+        if not worker_thread or not worker_thread.is_alive():
+            worker_thread = threading.Thread(target=worker)
+            worker_thread.daemon = True
+            worker_thread.start()
 
     return '', 200
 
