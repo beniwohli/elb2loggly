@@ -212,7 +212,7 @@ def sns():
                 if 'eventName' in record and record['eventName'].startswith(
                         'ObjectCreated:'
                 ):
-                    url = 'https://{}.s3.amazonaws.com/{}'.format(
+                    url = 'https://s3.amazonaws.com/{}/{}'.format(
                         record['s3']['bucket']['name'],
                         record['s3']['object']['key']
                     )
