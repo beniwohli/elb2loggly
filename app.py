@@ -24,7 +24,7 @@ LOGGLY_TOKEN = os.environ['LOGGLY_TOKEN']
 MAX_TRIES = os.environ.get('MAX_TRIES', 15)  # 15 means I will give up after ~9 hours
 LOGGLY_TAG = os.environ.get('LOGGLY_TAG', 'elb')
 
-loggly_url = 'http://logs-01.loggly.com/bulk/{}/{}/bulk/'.format(
+loggly_url = 'https://logs-01.loggly.com/bulk/{}/{}/bulk/'.format(
     LOGGLY_TOKEN,
     LOGGLY_TAG,
 )
@@ -183,16 +183,36 @@ def sns():
 
     elif msg_type == 'Notification':
         message = json.loads(obj['Message'])
-        for record in message['Records']:
-            url = 'http://{}.s3.amazonaws.com/{}'.format(
-                record['s3']['bucket']['name'],
-                record['s3']['object']['key']
+        event = message.get('Event', 'unknown')
+        if 'Records' in message:
+            for record in message['Records']:
+                if 'eventName' in record and record['eventName'].startswith(
+                        'ObjectCreated:'
+                ):
+                    url = 'https://{}.s3.amazonaws.com/{}'.format(
+                        record['s3']['bucket']['name'],
+                        record['s3']['object']['key']
+                    )
+                    app.logger.info(
+                        '%s: putting url on the queue: %s',
+                        record['eventName'], url
+                    )
+                    q.put(Task(url, datetime.datetime.now(), 0))
+                else:
+                    app.logger.warning(
+                        'Ignoring record with eventName %s',
+                        record.get('eventName', 'unknown')
+                    )
+            if not worker_thread or not worker_thread.is_alive():
+                worker_thread = threading.Thread(target=worker)
+                worker_thread.daemon = True
+                worker_thread.start()
+        else:
+            app.logger.info(
+                'Ignored message of type %s: %s',
+                event,
+                json.dumps(message, indent=2)
             )
-            q.put(Task(url, datetime.datetime.now(), 0))
-        if not worker_thread or not worker_thread.is_alive():
-            worker_thread = threading.Thread(target=worker)
-            worker_thread.daemon = True
-            worker_thread.start()
 
     return '', 200
 
