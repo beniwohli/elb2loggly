@@ -13,7 +13,7 @@ from queue import Queue
 
 import requests
 from awsauth import S3Auth
-from flask import Flask, json, request
+from flask import Flask, json, request, Response
 
 # # # Configuration # # #
 
@@ -193,6 +193,12 @@ def worker():
 def sns():
     global worker_thread
     headers = request.headers
+    if request.method == 'GET':
+        return Response(
+            '\n'.join('{}={}'.format(*item) for item in headers.items()),
+            mimetype='text/plain',
+            status=200,
+        )
     msg_type = headers.get('x-amz-sns-message-type')
     app.logger.info('Got SNS notification %s; content_type=%s', msg_type, request.content_type)
     obj = json.loads(request.data)
