@@ -2,6 +2,7 @@
 import csv
 import datetime
 import logging
+import math
 import os
 import sys
 import threading
@@ -23,6 +24,7 @@ SECRET_KEY = os.environ['AWS_SECRET_KEY']
 LOGGLY_TOKEN = os.environ['LOGGLY_TOKEN']
 MAX_TRIES = os.environ.get('MAX_TRIES', 15)  # 15 means I will give up after ~9 hours
 LOGGLY_TAG = os.environ.get('LOGGLY_TAG', 'elb')
+LOGGLY_MAX_SIZE = int(os.environ.get('LOGGLY_MAX_SIZE', 4*1024*1024))
 
 loggly_url = 'https://logs-01.loggly.com/bulk/{}/{}/bulk/'.format(
     LOGGLY_TOKEN,
@@ -111,10 +113,28 @@ def apache_combined_log(row):
     )
 
 
+def upload_to_loggly(events):
+    data = '\n'.join(events)
+    app.logger.info(
+        'Sending %d items (%s) to loggly',
+        len(events), file_size(len(data))
+    )
+    response = requests.post(
+        loggly_url,
+        data='\n'.join(events),
+        headers={'content-type': 'text/plain'},
+        timeout=5,
+    )
+    if response.status_code != requests.codes.ok:
+        raise Exception('Loggly responded %s' % response.text)
+
+
 def download_and_process(s3_object_url):
     response = s3ssion.get(s3_object_url, timeout=5)
-    reader = csv.DictReader(response.text.splitlines(), fieldnames=header, restval=None, dialect=Dialect)
+    reader = csv.DictReader(response.text.splitlines(), fieldnames=header,
+                            restval=None, dialect=Dialect)
     output = []
+    size = 0
     for row in reader:
         # split up some compound fields
         row['client_ip'], row['client_port'] = row.pop('client').split(':')
@@ -127,15 +147,18 @@ def download_and_process(s3_object_url):
             except Exception:
                 pass
         output.append(apache_combined_log(row) + json.dumps(row))
-    app.logger.info('Sending %d items to loggly', len(output))
-    response = requests.post(
-        loggly_url,
-        data='\n'.join(output),
-        headers={'content-type': 'text/plain'},
-        timeout=5,
-    )
-    if response.status_code != requests.codes.ok:
-        raise Exception('Loggly responded %s' % response.text)
+        size += len(output[-1])
+        if size > LOGGLY_MAX_SIZE:
+            upload_to_loggly(output)
+            output = []
+            size = 0
+    upload_to_loggly(output)
+
+
+def file_size(size):
+    _suffixes = ['bytes', 'KiB', 'MiB', 'GiB', 'TiB', 'EiB', 'ZiB']
+    order = int(math.log2(size) / 10) if size else 0
+    return '{:.4g} {}'.format(size / (1 << (order * 10)), _suffixes[order])
 
 
 def worker():
