@@ -114,7 +114,7 @@ def apache_combined_log(row):
 
 
 def upload_to_loggly(events):
-    data = '\n'.join(events)
+    data = '\n'.join(events).encode('utf-8')
     app.logger.info(
         'Sending %d items (%s) to loggly',
         len(events), file_size(len(data))
@@ -122,7 +122,7 @@ def upload_to_loggly(events):
     response = requests.post(
         loggly_url,
         data='\n'.join(events),
-        headers={'content-type': 'text/plain'},
+        headers={'content-type': 'text/plain;charset=utf-8'},
         timeout=5,
     )
     if response.status_code != requests.codes.ok:
@@ -180,7 +180,8 @@ def worker():
                         'Got exception while processing %s: %s(%s). '
                         'Retrying not before %s',
                         url, type(e).__name__, str(e),
-                        not_before.strftime('%H:%M:%S')
+                        not_before.strftime('%H:%M:%S'),
+                        exc_info=True,
                     )
             if tries <= MAX_TRIES:
                 q.put(Task(url, not_before, tries))
