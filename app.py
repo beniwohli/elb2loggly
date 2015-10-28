@@ -22,6 +22,7 @@ BIND_PORT = int(os.environ.get('BIND_PORT', 5000))
 ACCESS_KEY = os.environ['AWS_ACCESS_KEY_ID']
 SECRET_KEY = os.environ['AWS_SECRET_KEY']
 LOGGLY_TOKEN = os.environ['LOGGLY_TOKEN']
+ONLY_ERRORS = os.environ.get('ONLY_ERRORS', '').lower() in ('true', '1')
 MAX_TRIES = os.environ.get('MAX_TRIES', 15)  # 15 means I will give up after ~9 hours
 LOGGLY_TAG = os.environ.get('LOGGLY_TAG', 'elb')
 LOGGLY_MAX_SIZE = int(os.environ.get('LOGGLY_MAX_SIZE', 4*1024*1024))
@@ -146,13 +147,16 @@ def download_and_process(s3_object_url):
                 row[field] = func(row[field])
             except Exception:
                 pass
+        if ONLY_ERRORS and row['elb_status_code'] < 500:
+            continue
         output.append(apache_combined_log(row) + json.dumps(row))
         size += len(output[-1])
         if size > LOGGLY_MAX_SIZE:
             upload_to_loggly(output)
             output = []
             size = 0
-    upload_to_loggly(output)
+    if output:
+        upload_to_loggly(output)
 
 
 def file_size(size):
